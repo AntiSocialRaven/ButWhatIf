@@ -454,7 +454,7 @@ end
 -- Defaults
 if not SMODS.current_mod.config then SMODS.current_mod.config = {} end
 local cfg = SMODS.current_mod.config
-if cfg.keybinds_enabled == nil then cfg.keybinds_enabled = false end
+if cfg.keybinds_enabled == nil then cfg.keybinds_enabled = true end
 
 -- Keybind actions
 local function hovered_card()
@@ -529,24 +529,31 @@ local function cycle_enhancement_hovered(dir)
     apply_enhancement(card, ENHANCEMENTS[idx].key)
 end
 
+-- Menu toggles
+local function toggle_add_card()
+    if G.OVERLAY_MENU then close_overlay()
+    elseif G.STATE==G.STATES.SELECTING_HAND then open_add_card() end
+end
+
+local function toggle_sandbox_menu()
+    if G.OVERLAY_MENU then close_overlay()
+    elseif G.STATE==G.STATES.SELECTING_HAND
+        or G.STATE==G.STATES.BLIND_SELECT
+        or G.STATE==G.STATES.SHOP
+        or G.STATE==G.STATES.TAROT_PACK
+        or G.STATE==G.STATES.PLANET_PACK
+        or G.STATE==G.STATES.SPECTRAL_PACK
+        or G.STATE==G.STATES.BUFFOON_PACK
+        or G.STATE==G.STATES.STANDARD_PACK
+        then open_sandbox_menu() end
+end
+
 -- Keybinds
 local orig_keypressed=love.keypressed
 love.keypressed=function(key,scancode,isrepeat)
-    if key=="f2" then
-        if G.OVERLAY_MENU then close_overlay() elseif G.STATE==G.STATES.SELECTING_HAND then open_add_card() end; return
-    end
-    if key=="f3" then
-        if G.OVERLAY_MENU then close_overlay()
-        elseif G.STATE==G.STATES.SELECTING_HAND
-            or G.STATE==G.STATES.BLIND_SELECT
-            or G.STATE==G.STATES.SHOP
-            or G.STATE==G.STATES.TAROT_PACK
-            or G.STATE==G.STATES.PLANET_PACK
-            or G.STATE==G.STATES.SPECTRAL_PACK
-            or G.STATE==G.STATES.BUFFOON_PACK
-            or G.STATE==G.STATES.STANDARD_PACK
-            then open_sandbox_menu() end; return
-    end
+    -- Legacy F keys, kept for full-size keyboards
+    if key=="f2" then toggle_add_card(); return end
+    if key=="f3" then toggle_sandbox_menu(); return end
     -- Center picker search input
     if SBX_IN_CENTER_PICKER and G.OVERLAY_MENU then
         if key=="backspace" then
@@ -564,6 +571,10 @@ love.keypressed=function(key,scancode,isrepeat)
         end
         return
     end
+    -- Menu keys that work on keyboards without an F row (Chromebooks).
+    -- Checked after the search box so they can still be typed into it.
+    if key=="[" then toggle_add_card(); return end
+    if key=="]" then toggle_sandbox_menu(); return end
     -- Hotkeys
     if cfg.keybinds_enabled and not G.OVERLAY_MENU then
         local in_run = G.STATE and (
@@ -581,8 +592,8 @@ love.keypressed=function(key,scancode,isrepeat)
         if in_run then
         -- D = duplicate
         if key=="d" then duplicate_hovered(); return end
-        -- Delete/X = remove
-        if key=="delete" or key=="x" then remove_hovered(); return end
+        -- X / Delete / Backspace = remove (Chromebooks have no Delete key)
+        if key=="x" or key=="delete" or key=="backspace" then remove_hovered(); return end
         -- E / Q = cycle ed
         if key=="e" then cycle_edition_hovered(1); return end
         if key=="q" then cycle_edition_hovered(-1); return end
@@ -641,9 +652,10 @@ SMODS.current_mod.config_tab=function()
             })
         }},
         trow("Hotkeys (hover a card, then press):",0.28,G.C.YELLOW),
-        trow("D=Duplicate  Del/X=Remove",0.26,G.C.UI.TEXT_LIGHT),
+        trow("D=Duplicate  X/Backspace=Remove",0.26,G.C.UI.TEXT_LIGHT),
         trow("E/Q=Cycle Edition  F=Foil  H=Holo  P=Poly  N=Neg",0.26,G.C.UI.TEXT_LIGHT),
         trow("S/A=Cycle Seal  W/Tab=Cycle Enhancement",0.26,G.C.UI.TEXT_LIGHT),
-        trow("F2=Add Card  F3=Sandbox Menu  Right-click=Edit",0.26,G.C.UI.TEXT_LIGHT),
+        trow("[ =Add Card  ] =Sandbox Menu  Right-click=Edit",0.26,G.C.UI.TEXT_LIGHT),
+        trow("(F2/F3 also work on keyboards with an F row)",0.24,G.C.UI.TEXT_INACTIVE),
     }}
 end
