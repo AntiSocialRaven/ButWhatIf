@@ -1,3 +1,6 @@
+-- But What If X? - edit your current run and explore what could have been.
+-- Menus: [ = add a playing card, ] = sandbox menu (spawner, money, pass round...), right-click a card = edit it.
+
 -- Data
 local EDITIONS    = {{key="none",label="None"},{key="e_foil",label="Foil"},{key="e_holo",label="Holo"},{key="e_polychrome",label="Poly"},{key="e_negative",label="Neg"}}
 local ENHANCEMENTS= {{key="none",label="None"},{key="m_bonus",label="Bonus"},{key="m_mult",label="Mult"},{key="m_wild",label="Wild"},{key="m_glass",label="Glass"},{key="m_steel",label="Steel"},{key="m_stone",label="Stone"},{key="m_gold",label="Gold"},{key="m_lucky",label="Lucky"}}
@@ -6,42 +9,44 @@ local RANKS       = {"2","3","4","5","6","7","8","9","10","Jack","Queen","King",
 local SUITS       = {"Spades","Hearts","Clubs","Diamonds"}
 
 -- State
-local SBX_ADD_CARD  = {rank="Ace",suit="Spades",area="hand"}
-local SBX_ADD_CTYPE = "Joker"
-local SBX_ADD_CKEY  = nil
-local SBX_CENTER_PAGE = 1
-local SBX_SEARCH    = {text=""}
-local SBX_IN_CENTER_PICKER = false
+local SBX_ADD_CARD = {rank="Ace",suit="Spades",area="hand"}
+local SBX_SEARCH   = {text=""}
+local SBX_IN_PICKER = false
 
 -- Apply helpers
 local function apply_edition(card,key)    card:set_edition(key~="none" and key or nil,true,true) end
 local function apply_enhancement(card,key) local c=(key=="none") and G.P_CENTERS.c_base or G.P_CENTERS[key]; if c then card:set_ability(c) end end
 local function apply_seal(card,key)       card:set_seal(key~="none" and key or nil,true,true) end
+local function is_playing_card(card) local s=card.ability and card.ability.set return s=="Default" or s=="Enhanced" end
 
 -- Spawn helpers
-local function spawn_center(key,area)
-    local center=G.P_CENTERS[key]; if not center then return end
-    local nc=Card(area.T.x+area.T.w/2,area.T.y,G.CARD_W,G.CARD_H,nil,center)
-    nc:add_to_deck(); area:emplace(nc); return nc
-end
 local function spawn_playing_card(rank,suit,area)
     local ck; for k,v in pairs(G.P_CARDS) do if v.suit==suit and v.value==rank then ck=k;break end end
     if not ck then return end
-    local nc=Card(area.T.x+area.T.w/2,area.T.y,G.CARD_W,G.CARD_H,G.P_CARDS[ck],G.P_CENTERS.c_base)
-    nc:add_to_deck(); area:emplace(nc)
+    local nc=create_playing_card({front=G.P_CARDS[ck],center=G.P_CENTERS.c_base},area)
+    if area==G.hand then nc:juice_up(0.3,0.3) end
 end
 
 -- UI helpers
-local function btn(label,func,ref,scale,bg)
-    return {n=G.UIT.C,config={align="cm",padding=0.07,r=0.05,colour=bg or G.C.GREY,button=func,ref_table=ref,hover=true,shadow=true},
+local function btn(label,func,ref,scale,bg,minw)
+    return {n=G.UIT.C,config={align="cm",padding=0.07,r=0.05,minw=minw,colour=bg or G.C.GREY,button=func,ref_table=ref,hover=true,shadow=true},
         nodes={{n=G.UIT.T,config={text=label,scale=scale or 0.33,colour=G.C.UI.TEXT_LIGHT}}}}
 end
-local function bcell(label,func,ref,scale,bg)
-    return {n=G.UIT.C,config={align="cm",padding=0.04},nodes={btn(label,func,ref,scale,bg)}}
+local function bcell(label,func,ref,scale,bg,minw)
+    return {n=G.UIT.C,config={align="cm",padding=0.04},nodes={btn(label,func,ref,scale,bg,minw)}}
 end
 local function trow(text,scale,col)
     return {n=G.UIT.R,config={align="cm",padding=0.04},nodes={{n=G.UIT.T,config={text=text,scale=scale or 0.33,colour=col or G.C.UI.TEXT_LIGHT}}}}
 end
+local function section(title,colour,rows)
+    local nodes={trow(title,0.32,colour or G.C.YELLOW)}
+    for _,r in ipairs(rows) do nodes[#nodes+1]=r end
+    return {n=G.UIT.R,config={align="cm",r=0.1,colour=G.C.L_BLACK,emboss=0.05,padding=0.07,minw=9},nodes=nodes}
+end
+local function row(nodes) return {n=G.UIT.R,config={align="cm",padding=0.03},nodes=nodes} end
+local function r2(x) return math.floor(x*100+0.5)/100 end
+local function fmt(v) if type(v)~="number" then return tostring(v) end if v==math.floor(v) then return tostring(v) end return tostring(r2(v)) end
+local function card_params() return {bypass_discovery_center=true,bypass_discovery_ui=true,bypass_lock=true} end
 
 -- Overlay helpers
 local function open_overlay(def)
@@ -52,345 +57,334 @@ local function close_overlay()
     if G.OVERLAY_MENU then G.OVERLAY_MENU:remove() end
     G.OVERLAY_MENU = nil
     G.SETTINGS.paused = false
+    SBX_IN_PICKER = false
 end
 G.FUNCS.sbx_close=function() close_overlay() end
 
--- Card editor
-local function card_editor_def(card)
-    local cur_ed=(card.edition and card.edition.key) or "none"
-    local cur_enh="none"
-    if card.config and card.config.center then local ck=card.config.center.key or "c_base"; if ck~="c_base" then cur_enh=ck end end
-    local cur_seal=card.seal or "none"
-    local bonus=card.sbx_bonus_chips or 0
-    local ed_row={}
-    for _,ed in ipairs(EDITIONS) do local a=ed.key==cur_ed; ed_row[#ed_row+1]=bcell(a and("["..ed.label.."]")or ed.label,"sbx_set_edition",{card=card,key=ed.key},0.27,a and G.C.GREEN or G.C.GREY) end
-    local enh1,enh2={},{}
-    for i,en in ipairs(ENHANCEMENTS) do local a=en.key==cur_enh; local c=bcell(a and("["..en.label.."]")or en.label,"sbx_set_enhancement",{card=card,key=en.key},0.26,a and G.C.GREEN or G.C.GREY); if i<=5 then enh1[#enh1+1]=c else enh2[#enh2+1]=c end end
-    local seal_row={}
-    for _,sl in ipairs(SEALS) do local a=sl.key==cur_seal; seal_row[#seal_row+1]=bcell(a and("["..sl.label.."]")or sl.label,"sbx_set_seal",{card=card,key=sl.key},0.27,a and G.C.GREEN or G.C.GREY) end
-    return create_UIBox_generic_options({back_func="sbx_close",contents={
-        trow("Card Editor",0.42,G.C.WHITE),
-        trow("Edition",0.28,G.C.YELLOW),{n=G.UIT.R,config={align="cm",padding=0.03},nodes=ed_row},
-        trow("Enhancement",0.28,G.C.YELLOW),{n=G.UIT.R,config={align="cm",padding=0.03},nodes=enh1},{n=G.UIT.R,config={align="cm",padding=0.03},nodes=enh2},
-        trow("Seal",0.28,G.C.YELLOW),{n=G.UIT.R,config={align="cm",padding=0.03},nodes=seal_row},
-        {n=G.UIT.R,config={align="cm",padding=0.05},nodes={
-            {n=G.UIT.T,config={text="Chip Bonus: ",scale=0.28,colour=G.C.YELLOW}},
-            bcell("-10","sbx_chip_adj",{card=card,d=-10},0.27,G.C.RED),bcell("-1","sbx_chip_adj",{card=card,d=-1},0.27,G.C.RED),
-            {n=G.UIT.C,config={align="cm",padding=0.05},nodes={{n=G.UIT.T,config={text=tostring(bonus),scale=0.36,colour=G.C.WHITE}}}},
-            bcell("+1","sbx_chip_adj",{card=card,d=1},0.27,G.C.GREEN),bcell("+10","sbx_chip_adj",{card=card,d=10},0.27,G.C.GREEN),
-        }},
-        {n=G.UIT.R,config={align="cm",padding=0.05},nodes={
-            bcell("Duplicate","sbx_duplicate_card",{card=card},0.3,G.C.BLUE),
-            bcell("Remove","sbx_remove_card",{card=card},0.3,G.C.RED),
-        }},
-    }})
+-- ===================== card editor =====================
+-- One editor for every card: its own numbers (what the card is built from), bonus chips / xMult,
+-- edition, seal, enhancement (playing cards), duplicate and remove. Numbers change in place, live.
+local EDIT = {}
+local function edit_fields(card)
+    local f, ab = {}, card.ability
+    for k in pairs(card.config.center.config or {}) do
+        if k~="extra" and type(ab[k])=="number" then f[#f+1]={ab,k,k} end
+    end
+    if type(ab.extra)=="number" then f[#f+1]={ab,"extra","extra"}
+    elseif type(ab.extra)=="table" then
+        for k,v in pairs(ab.extra) do if type(v)=="number" then f[#f+1]={ab.extra,k,k} end end
+    end
+    if is_playing_card(card) then
+        for _,k in ipairs{"perma_bonus","perma_mult","perma_x_mult","perma_h_chips","perma_h_mult"} do
+            if type(ab[k])=="number" then f[#f+1]={ab,k,(k:gsub("perma_","permanent "))} end
+        end
+        if card.base and type(card.base.nominal)=="number" then f[#f+1]={card.base,"nominal","rank chips"} end
+    end
+    table.sort(f,function(a,b) return a[3]<b[3] end)
+    while #f>9 do table.remove(f) end
+    ab.sbx_chips = ab.sbx_chips or 0
+    ab.sbx_xmult = ab.sbx_xmult or 0
+    f[#f+1]={ab,"sbx_chips","bonus +chips"}
+    f[#f+1]={ab,"sbx_xmult","bonus xMult (+1)"}
+    f[#f+1]={ab,"extra_value","sell value +"}
+    for _,x in ipairs(f) do x.text=fmt(x[1][x[2]]) end
+    return f
 end
-local function open_card_editor(card) open_overlay(card_editor_def(card)) end
-
--- Joker / consumable editor
-local function joker_editor_def(card)
-    local cur_ed=(card.edition and card.edition.key) or "none"
-    local ed_row={}
-    for _,ed in ipairs(EDITIONS) do local a=ed.key==cur_ed; ed_row[#ed_row+1]=bcell(a and("["..ed.label.."]")or ed.label,"sbx_joker_set_edition",{card=card,key=ed.key},0.27,a and G.C.GREEN or G.C.GREY) end
-    local bonus=card.sbx_bonus_chips or 0
-    local xmult=card.sbx_xmult or 0
-    local name=(card.config and card.config.center and card.config.center.name) or "?"
-    return create_UIBox_generic_options({back_func="sbx_close",contents={
-        trow("Joker / Consumable Editor",0.38,G.C.WHITE),
-        trow(name,0.3,G.C.YELLOW),
-        trow("Edition",0.28,G.C.YELLOW),{n=G.UIT.R,config={align="cm",padding=0.03},nodes=ed_row},
-        {n=G.UIT.R,config={align="cm",padding=0.05},nodes={
-            {n=G.UIT.T,config={text="+Chips: ",scale=0.28,colour=G.C.YELLOW}},
-            bcell("-10","sbx_joker_chip_adj",{card=card,d=-10},0.27,G.C.RED),bcell("-1","sbx_joker_chip_adj",{card=card,d=-1},0.27,G.C.RED),
-            {n=G.UIT.C,config={align="cm",padding=0.05},nodes={{n=G.UIT.T,config={text=tostring(bonus),scale=0.34,colour=G.C.WHITE}}}},
-            bcell("+1","sbx_joker_chip_adj",{card=card,d=1},0.27,G.C.GREEN),bcell("+10","sbx_joker_chip_adj",{card=card,d=10},0.27,G.C.GREEN),
-        }},
-        {n=G.UIT.R,config={align="cm",padding=0.05},nodes={
-            {n=G.UIT.T,config={text="xMult bonus: ",scale=0.28,colour=G.C.YELLOW}},
-            bcell("-1","sbx_joker_xmult_adj",{card=card,d=-1},0.27,G.C.RED),
-            {n=G.UIT.C,config={align="cm",padding=0.05},nodes={{n=G.UIT.T,config={text=tostring(xmult),scale=0.34,colour=G.C.WHITE}}}},
-            bcell("+1","sbx_joker_xmult_adj",{card=card,d=1},0.27,G.C.GREEN),
-        }},
-        {n=G.UIT.R,config={align="cm",padding=0.05},nodes={
-            bcell("Duplicate","sbx_duplicate_card",{card=card},0.3,G.C.BLUE),
-            bcell("Remove","sbx_remove_card",{card=card},0.3,G.C.RED),
-        }},
-    }})
+local function choice_row(list,current,func,colour)
+    local cells={}
+    for _,o in ipairs(list) do
+        local on=o.key==current
+        cells[#cells+1]=bcell(on and ("["..o.label.."]") or o.label,func,{key=o.key},0.27,on and (colour or G.C.GREEN) or G.C.GREY)
+    end
+    return cells
 end
-local function open_joker_editor(card) open_overlay(joker_editor_def(card)) end
+local function editor_def()
+    local card=EDIT.card
+    local center=card.config.center
+    local name=localize{type="name_text",set=center.set,key=center.key}
+    if is_playing_card(card) and card.base then name=tostring(card.base.value).." of "..tostring(card.base.suit) end
+    local num_rows={}
+    for i,x in ipairs(EDIT.fields) do
+        local ops={}
+        for _,op in ipairs{"/2","-1","+1","x2","x10"} do ops[#ops+1]=bcell(op,"sbx_edit_num",{i=i,op=op},0.26,(op=="/2" or op=="-1") and G.C.RED or G.C.GREEN,0.55) end
+        num_rows[#num_rows+1]={n=G.UIT.R,config={align="cm",padding=0.01},nodes={
+            {n=G.UIT.C,config={align="cr",minw=2.8},nodes={{n=G.UIT.T,config={text=x[3],scale=0.3,colour=G.C.UI.TEXT_LIGHT}}}},
+            {n=G.UIT.C,config={align="cm",minw=1.5,r=0.08,colour=G.C.BLACK,padding=0.05},nodes={
+                {n=G.UIT.T,config={ref_table=x,ref_value="text",scale=0.34,colour=G.C.GOLD}}}},
+            {n=G.UIT.C,config={align="cm"},nodes=ops},
+        }}
+    end
+    local contents={
+        trow("Edit: "..name,0.45,G.C.WHITE),
+        trow("Changes apply instantly. Hover the card afterwards to see its new text.",0.26),
+        section("Numbers",G.C.GOLD,num_rows),
+        section("Edition",G.C.DARK_EDITION,{row(choice_row(EDITIONS,card.edition and card.edition.key or "none","sbx_edit_edition",G.C.DARK_EDITION))}),
+        section("Seal",G.C.RED,{row(choice_row(SEALS,card.seal or "none","sbx_edit_seal",G.C.RED))}),
+    }
+    if is_playing_card(card) then
+        local cur=center.key~="c_base" and center.key or "none"
+        local cells=choice_row(ENHANCEMENTS,cur,"sbx_edit_enh",G.C.SECONDARY_SET.Enhanced)
+        local r1,r2_={},{}
+        for i,c in ipairs(cells) do if i<=5 then r1[#r1+1]=c else r2_[#r2_+1]=c end end
+        contents[#contents+1]=section("Enhancement",G.C.SECONDARY_SET.Enhanced,{row(r1),row(r2_)})
+    end
+    contents[#contents+1]=row{bcell("Duplicate","sbx_duplicate_card",{card=card},0.32,G.C.BLUE,2),bcell("Remove","sbx_remove_card",{card=card},0.32,G.C.RED,2)}
+    return create_UIBox_generic_options({back_func="sbx_close",contents=contents})
+end
+local function open_editor(card)
+    if not (card and card.ability and card.config and card.config.center) then return end
+    EDIT.card,EDIT.fields=card,edit_fields(card)
+    open_overlay(editor_def())
+end
+G.FUNCS.sbx_edit_num=function(e)
+    local r=e.config.ref_table; local x=EDIT.fields[r.i]; if not x then return end
+    local v=x[1][x[2]]; if type(v)~="number" then return end
+    if r.op=="/2" then v=v/2 elseif r.op=="-1" then v=v-1 elseif r.op=="+1" then v=v+1 elseif r.op=="x2" then v=v*2 else v=v*10 end
+    if v~=math.floor(v) then v=r2(v) end
+    if (x[2]=="sbx_chips" or x[2]=="sbx_xmult") and v<0 then v=0 end
+    x[1][x[2]]=v; x.text=fmt(v)
+    if x[2]=="extra_value" then EDIT.card:set_cost() end
+    EDIT.card:juice_up(0.3,0.3); play_sound("chips1",1.1,0.4)
+end
+G.FUNCS.sbx_edit_edition=function(e) apply_edition(EDIT.card,e.config.ref_table.key); open_overlay(editor_def()) end
+G.FUNCS.sbx_edit_seal=function(e) apply_seal(EDIT.card,e.config.ref_table.key); open_overlay(editor_def()) end
+G.FUNCS.sbx_edit_enh=function(e) apply_enhancement(EDIT.card,e.config.ref_table.key); EDIT.fields=edit_fields(EDIT.card); open_overlay(editor_def()) end
 
--- Add playing card
+local function card_area_of(card)
+    for _,area in ipairs({G.hand,G.deck,G.jokers,G.consumeables}) do
+        if area then for _,c in ipairs(area.cards) do if c==card then return area end end end
+    end
+end
+local function duplicate(card)
+    local area=card_area_of(card); if not area then return end
+    local playing=is_playing_card(card)
+    if playing then G.playing_card=(G.playing_card or 0)+1 end -- same steps the game uses for DNA
+    local nc=copy_card(card,nil,nil,playing and G.playing_card or nil)
+    if playing then table.insert(G.playing_cards,nc) end
+    nc:add_to_deck(); area:emplace(nc); nc:start_materialize()
+end
+local function remove(card)
+    local area=card_area_of(card); if not area then return end
+    card:start_dissolve()
+end
+G.FUNCS.sbx_remove_card=function(e) local r=e.config.ref_table; close_overlay(); if r and r.card then remove(r.card) end end
+G.FUNCS.sbx_duplicate_card=function(e) local r=e.config.ref_table; close_overlay(); if r and r.card then duplicate(r.card) end end
+
+-- bonus chips / xMult added in the editor (stored in ability, so they survive saving)
+local orig_get_chip_bonus=Card.get_chip_bonus
+function Card:get_chip_bonus(...)
+    local base=orig_get_chip_bonus(self,...)
+    local b=self.ability and self.ability.sbx_chips
+    if b and b~=0 and not self.ability.extra_enhancement then base=base+b end
+    return base
+end
+local orig_get_chip_x_mult=Card.get_chip_x_mult
+if orig_get_chip_x_mult then
+    function Card:get_chip_x_mult(...)
+        local base=orig_get_chip_x_mult(self,...)
+        local x=self.ability and self.ability.sbx_xmult
+        if x and x>0 and not self.ability.extra_enhancement then base=(base and base>0 and base or 1)*(1+x) end
+        return base
+    end
+end
+local orig_calculate_joker=Card.calculate_joker
+function Card:calculate_joker(context,...)
+    local ret,trig=orig_calculate_joker(self,context,...)
+    -- only ADD an effect when there is one: returning {} for every context makes Steamodded log warnings
+    if context and context.joker_main and not context.blueprint and self.ability and not self.debuff then
+        local c,x=self.ability.sbx_chips or 0,self.ability.sbx_xmult or 0
+        if c~=0 or x>0 then
+            local extra={}
+            if c~=0 then extra.chips=c end
+            if x>0 then extra.x_mult=1+x end
+            ret=type(ret)=="table" and SMODS.merge_effects({ret,extra}) or extra
+        end
+    end
+    return ret,trig
+end
+
+-- ===================== add playing card =====================
 local function add_card_def()
     local s=SBX_ADD_CARD
     local rank_cells={}
-    for _,r in ipairs(RANKS) do local a=r==s.rank; rank_cells[#rank_cells+1]=bcell(r,"sbx_pick_rank",{val=r},0.25,a and G.C.GREEN or G.C.GREY) end
+    for _,r in ipairs(RANKS) do rank_cells[#rank_cells+1]=bcell(r,"sbx_pick_rank",{val=r},0.25,r==s.rank and G.C.GREEN or G.C.GREY) end
     local suit_cells={}
-    for _,su in ipairs(SUITS) do local a=su==s.suit; suit_cells[#suit_cells+1]=bcell(su,"sbx_pick_suit",{val=su},0.29,a and G.C.GREEN or G.C.GREY) end
+    for _,su in ipairs(SUITS) do suit_cells[#suit_cells+1]=bcell(su,"sbx_pick_suit",{val=su},0.29,su==s.suit and G.C.GREEN or G.C.GREY) end
     return create_UIBox_generic_options({back_func="sbx_close",contents={
         trow("Add Playing Card",0.42,G.C.WHITE),
-        trow("Rank",0.28,G.C.YELLOW),{n=G.UIT.R,config={align="cm",padding=0.03},nodes=rank_cells},
-        trow("Suit",0.28,G.C.YELLOW),{n=G.UIT.R,config={align="cm",padding=0.04},nodes=suit_cells},
+        trow("Rank",0.28,G.C.YELLOW),row(rank_cells),
+        trow("Suit",0.28,G.C.YELLOW),row(suit_cells),
         {n=G.UIT.R,config={align="cm",padding=0.05},nodes={
             {n=G.UIT.T,config={text="Add to: ",scale=0.28,colour=G.C.YELLOW}},
             bcell("Hand","sbx_area_hand",{},0.3,s.area=="hand" and G.C.GREEN or G.C.GREY),
             bcell("Deck","sbx_area_deck",{},0.3,s.area=="deck" and G.C.GREEN or G.C.GREY),
         }},
-        {n=G.UIT.R,config={align="cm",padding=0.05},nodes={bcell("Add Card","sbx_confirm_add_card",{},0.32,G.C.GREEN)}},
+        row{bcell("Add Card","sbx_confirm_add_card",{},0.32,G.C.GREEN)},
     }})
 end
 local function open_add_card() SBX_ADD_CARD={rank="Ace",suit="Spades",area="hand"}; open_overlay(add_card_def()) end
+G.FUNCS.sbx_open_add_card=function() close_overlay(); open_add_card() end
+G.FUNCS.sbx_pick_rank=function(e) SBX_ADD_CARD.rank=e.config.ref_table.val; open_overlay(add_card_def()) end
+G.FUNCS.sbx_pick_suit=function(e) SBX_ADD_CARD.suit=e.config.ref_table.val; open_overlay(add_card_def()) end
+G.FUNCS.sbx_area_hand=function() SBX_ADD_CARD.area="hand"; open_overlay(add_card_def()) end
+G.FUNCS.sbx_area_deck=function() SBX_ADD_CARD.area="deck"; open_overlay(add_card_def()) end
+G.FUNCS.sbx_confirm_add_card=function() spawn_playing_card(SBX_ADD_CARD.rank,SBX_ADD_CARD.suit,(SBX_ADD_CARD.area=="hand") and G.hand or G.deck); close_overlay() end
 
--- Add card picker
-local COLS = 5   -- cards per row
-local ROWS = 4   -- rows per page
-local CARDS_PER_PAGE = COLS * ROWS
-
-local function center_list(ctype, search_text)
-    local pool=G.P_CENTER_POOLS[ctype]; if not pool then return {} end
+-- ===================== spawner: a grid of real cards, click to add instantly =====================
+local SPAWN={kind="Joker",page=1,msg=""}
+local KINDS={{"Joker",G.C.BLUE},{"Tarot",G.C.SECONDARY_SET.Tarot},{"Planet",G.C.SECONDARY_SET.Planet},
+    {"Spectral",G.C.SECONDARY_SET.Spectral},{"Voucher",G.C.SECONDARY_SET.Voucher},{"Tag",G.C.ORANGE}}
+local COLS,ROWS,TAG_COLS,TAG_ROWS=6,3,10,3
+local function display_name(c)
+    local ok,n=pcall(localize,{type="name_text",set=c.set or SPAWN.kind,key=c.key})
+    return (ok and type(n)=="string" and n~="ERROR") and n or (c.name or c.key or "?")
+end
+local function spawn_list()
+    local pool=G.P_CENTER_POOLS[SPAWN.kind] or {}
+    local st=SBX_SEARCH.text:lower()
     local out={}
-    local st=(search_text or ""):lower()
     for _,c in ipairs(pool) do
-        if not c.hidden then
-            local name=(c.name or c.key or ""):lower()
-            local key=(c.key or ""):lower()
-            if st=="" or name:find(st,1,true) or key:find(st,1,true) then
-                out[#out+1]=c
-            end
+        if not (SMODS.hide_from_collection and SMODS.hide_from_collection(c)) then
+            if st=="" or display_name(c):lower():find(st,1,true) or (c.key or ""):lower():find(st,1,true) then out[#out+1]=c end
         end
     end
-    table.sort(out,function(a,b) return (a.name or a.key)<(b.name or b.key) end)
     return out
 end
-
-local function card_img_node(center, w, h)
-    local name = center.name or center.key or "?"
-    if #name > 10 then name = name:sub(1,9).."~" end
-    return {n=G.UIT.T,config={text=name,scale=0.22,colour=G.C.UI.TEXT_LIGHT}}
-end
-
-local function add_center_def()
-    local ct=SBX_ADD_CTYPE
-    local list=center_list(ct,SBX_SEARCH.text)
-    local total_pages=math.max(1,math.ceil(#list/CARDS_PER_PAGE))
-    SBX_CENTER_PAGE=math.min(SBX_CENTER_PAGE,total_pages)
-
-    -- Type tabs
-    local type_cells={}
-    for _,t in ipairs({"Joker","Tarot","Planet","Spectral"}) do
-        local a=t==ct
-        type_cells[#type_cells+1]=bcell(t,"sbx_center_type",{val=t},0.3,a and G.C.GREEN or G.C.GREY)
-    end
-
-    -- Search row
-    local search_display = SBX_SEARCH.text=="" and "(type to filter)" or ("\""..SBX_SEARCH.text.."\"")
-    local search_row = {n=G.UIT.R,config={align="cm",padding=0.04},nodes={
-        {n=G.UIT.T,config={text="Search: ",scale=0.28,colour=G.C.YELLOW}},
-        {n=G.UIT.C,config={align="cm",padding=0.04},nodes={{
-            n=G.UIT.T,config={text=search_display,scale=0.28,colour=G.C.UI.TEXT_LIGHT}
-        }}},
-        bcell("X","sbx_search_clear",{},0.28,SBX_SEARCH.text~="" and G.C.RED or G.C.GREY),
-    }}
-
-    -- Page slice
-    local page_start=(SBX_CENTER_PAGE-1)*CARDS_PER_PAGE+1
-    local page_end=math.min(page_start+CARDS_PER_PAGE-1,#list)
-    local n_items=math.max(0,page_end-page_start+1)
-
-    -- Card grid
-    local grid_rows={}
-    if n_items==0 then
-        grid_rows[1]=trow("(no results)",0.28,G.C.UI.TEXT_LIGHT)
+local function per_page() return SPAWN.kind=="Tag" and TAG_COLS*TAG_ROWS or COLS*ROWS end
+local function spawn_now(key)
+    if SPAWN.kind=="Tag" then
+        if G.P_TAGS[key] then add_tag(Tag(key)) end
+    elseif SPAWN.kind=="Voucher" then
+        G.GAME.used_vouchers[key]=true
+        Card.apply_to_run(nil,G.P_CENTERS[key])
     else
-        for row=1,ROWS do
-            local row_nodes={}
-            for col=1,COLS do
-                local idx=page_start+(row-1)*COLS+(col-1)
-                if idx<=page_end then
-                    local center=list[idx]
-                    local is_sel=(SBX_ADD_CKEY==center.key)
-                    local name=center.name or center.key or "?"
-                    if #name>9 then name=name:sub(1,8).."~" end
-                    local border_col = is_sel and G.C.GREEN or {0.2,0.2,0.2,0.8}
-                    row_nodes[#row_nodes+1]={
-                        n=G.UIT.C,config={
-                            align="cm",padding=0.06,r=0.05,
-                            colour=border_col,
-                            button="sbx_center_pick",
-                            ref_table={key=center.key},
-                            hover=true,shadow=true,
-                            minw=1.1,minh=0.5,
-                        },
-                        nodes={{
-                            n=G.UIT.T,config={text=name,scale=0.24,colour=is_sel and G.C.WHITE or G.C.UI.TEXT_LIGHT}
-                        }}
-                    }
+        local area=SPAWN.kind=="Joker" and G.jokers or G.consumeables
+        local n=create_card(SPAWN.kind,area,nil,nil,nil,nil,key,"sbx_spawn")
+        n:add_to_deck(); area:emplace(n); n:start_materialize()
+    end
+    SPAWN.msg="Added "..display_name(G.P_CENTERS[key] or G.P_TAGS[key] or {key=key})
+    play_sound("card1",1.2,0.6)
+end
+G.FUNCS.sbx_spawn_tag=function(e) spawn_now(e.config.ref_table.key) end
+local function grid()
+    local list=spawn_list()
+    local first=(SPAWN.page-1)*per_page()
+    local rows={}
+    if SPAWN.kind=="Tag" then
+        for r=1,TAG_ROWS do
+            local cells={}
+            for c=1,TAG_COLS do
+                local center=list[first+(r-1)*TAG_COLS+c]
+                if center then
+                    local tag=Tag(center.key,true); tag.hide_ability=false
+                    local ui,sp=tag:generate_UI(0.8)
+                    sp.click=function() spawn_now(center.key) end
+                    cells[#cells+1]={n=G.UIT.C,config={align="cm",padding=0.06,r=0.1,colour=G.C.L_BLACK,button="sbx_spawn_tag",ref_table={key=center.key},hover=true},nodes={ui}}
                 end
             end
-            if #row_nodes>0 then
-                grid_rows[#grid_rows+1]={n=G.UIT.R,config={align="cm",padding=0.04},nodes=row_nodes}
+            if cells[1] then rows[#rows+1]=row(cells) end
+        end
+    else
+        local s=0.8
+        for r=1,ROWS do
+            local area=CardArea(G.ROOM.T.x,G.ROOM.T.h,(COLS+0.25)*G.CARD_W*s,G.CARD_H*s,
+                {card_limit=COLS,type="title",highlight_limit=0,collection=true,card_w=G.CARD_W*s})
+            for c=1,COLS do
+                local center=list[first+(r-1)*COLS+c]
+                if center then
+                    local card=Card(area.T.x+area.T.w/2,area.T.y,G.CARD_W*s,G.CARD_H*s,G.P_CARDS.empty,center,card_params())
+                    card.sbx_spawn=center.key
+                    area:emplace(card)
+                end
             end
+            rows[#rows+1]={n=G.UIT.R,config={align="cm",padding=0.04,no_fill=true},nodes={{n=G.UIT.O,config={object=area}}}}
         end
     end
-
-    -- Pagination
-    local page_label="Page "..SBX_CENTER_PAGE.." / "..total_pages
-    local nav_cells={}
-    if SBX_CENTER_PAGE>1 then nav_cells[#nav_cells+1]=bcell("< Prev","sbx_center_prev",{},0.3,G.C.GREY) end
-    nav_cells[#nav_cells+1]={n=G.UIT.C,config={align="cm",padding=0.06},nodes={{
-        n=G.UIT.T,config={text=page_label,scale=0.3,colour=G.C.UI.TEXT_LIGHT}
-    }}}
-    if SBX_CENTER_PAGE<total_pages then nav_cells[#nav_cells+1]=bcell("Next >","sbx_center_next",{},0.3,G.C.GREY) end
-
-    local sel_name="None selected"
-    if SBX_ADD_CKEY and G.P_CENTERS[SBX_ADD_CKEY] then
-        sel_name=G.P_CENTERS[SBX_ADD_CKEY].name or SBX_ADD_CKEY
-    end
-
+    if not rows[1] then rows[1]=trow("(no results)",0.3) end
+    return rows,math.max(1,math.ceil(#list/per_page()))
+end
+local function spawner_def()
+    local rows,pages=grid()
+    SPAWN.page=math.min(SPAWN.page,pages)
+    local kinds={}
+    for _,k in ipairs(KINDS) do kinds[#kinds+1]=bcell(k[1],"sbx_spawn_kind",{val=k[1]},0.3,SPAWN.kind==k[1] and G.C.GOLD or k[2],1.4) end
+    kinds[#kinds+1]=bcell("Playing card","sbx_open_add_card",{},0.3,G.C.GREY,1.8)
     local contents={
-        trow("Add Joker / Consumable",0.4,G.C.WHITE),
-        {n=G.UIT.R,config={align="cm",padding=0.04},nodes=type_cells},
-        search_row,
+        trow("Spawner",0.5,G.C.WHITE),
+        trow("Click a card or tag to add it right now. Hover for details. Type to search.",0.27),
+        row(kinds),
+        {n=G.UIT.R,config={align="cm",padding=0.03},nodes={
+            {n=G.UIT.T,config={text="Search: ",scale=0.3,colour=G.C.YELLOW}},
+            {n=G.UIT.T,config={text=SBX_SEARCH.text=="" and "(just start typing)" or ('"'..SBX_SEARCH.text..'"'),scale=0.3,colour=G.C.UI.TEXT_LIGHT}},
+            bcell("X","sbx_search_clear",{},0.28,SBX_SEARCH.text~="" and G.C.RED or G.C.GREY),
+        }},
+        {n=G.UIT.R,config={align="cm",r=0.1,colour=G.C.BLACK,emboss=0.05,padding=0.08,minh=3},nodes=rows},
     }
-    for _,r in ipairs(grid_rows) do contents[#contents+1]=r end
-    contents[#contents+1]={n=G.UIT.R,config={align="cm",padding=0.04},nodes=nav_cells}
-    contents[#contents+1]=trow("Selected: "..sel_name,0.26,G.C.YELLOW)
-    contents[#contents+1]={n=G.UIT.R,config={align="cm",padding=0.05},nodes={
-        bcell("Spawn","sbx_confirm_add_center",{},0.34,SBX_ADD_CKEY and G.C.GREEN or G.C.GREY)
-    }}
+    if pages>1 then
+        local nav={}
+        nav[#nav+1]=bcell("< Prev","sbx_spawn_page",{d=-1},0.3,SPAWN.page>1 and G.C.RED or G.C.GREY)
+        nav[#nav+1]={n=G.UIT.C,config={align="cm",minw=1.8},nodes={{n=G.UIT.T,config={text="Page "..SPAWN.page.." / "..pages,scale=0.32,colour=G.C.UI.TEXT_LIGHT}}}}
+        nav[#nav+1]=bcell("Next >","sbx_spawn_page",{d=1},0.3,SPAWN.page<pages and G.C.RED or G.C.GREY)
+        contents[#contents+1]=row(nav)
+    end
+    contents[#contents+1]={n=G.UIT.R,config={align="cm"},nodes={{n=G.UIT.T,config={ref_table=SPAWN,ref_value="msg",scale=0.32,colour=G.C.GREEN}}}}
+    return create_UIBox_generic_options({back_func="sbx_close",contents=contents})
+end
+local function open_spawner()
+    SBX_IN_PICKER=true
+    open_overlay(spawner_def())
+    SBX_IN_PICKER=true
+end
+G.FUNCS.sbx_open_spawner=function() SPAWN.page=1; SPAWN.msg=""; SBX_SEARCH.text=""; open_spawner() end
+G.FUNCS.sbx_spawn_kind=function(e) SPAWN.kind=e.config.ref_table.val; SPAWN.page=1; open_spawner() end
+G.FUNCS.sbx_spawn_page=function(e) SPAWN.page=math.max(1,SPAWN.page+e.config.ref_table.d); open_spawner() end
+G.FUNCS.sbx_search_clear=function() SBX_SEARCH.text=""; SPAWN.page=1; open_spawner() end
 
-    return create_UIBox_generic_options({back_func="sbx_close_center",contents=contents})
+-- clicking a card in the spawner adds it instead of picking it up
+local orig_click=Card.click
+function Card:click(...)
+    if self.sbx_spawn then spawn_now(self.sbx_spawn); self:juice_up(0.3,0.3); return end
+    return orig_click(self,...)
 end
 
-local function open_add_center()
-    SBX_ADD_CKEY=nil; SBX_CENTER_PAGE=1; SBX_SEARCH.text=""
-    SBX_IN_CENTER_PICKER=true
-    open_overlay(add_center_def())
-end
-
--- main menu
+-- ===================== sandbox menu =====================
 local function sandbox_menu_def()
     return create_UIBox_generic_options({back_func="sbx_close",contents={
         trow("Sandbox Menu",0.45,G.C.WHITE),
-        {n=G.UIT.R,config={align="cm",padding=0.06},nodes={
-            bcell("Add Playing Card","sbx_open_add_card",{},0.32,G.C.BLUE),
-            bcell("Add Joker/Consumable","sbx_open_add_center",{},0.32,G.C.BLUE),
-        }},
+        row{bcell("Spawner","sbx_open_spawner",{},0.34,G.C.GREEN,2.4),bcell("Add Playing Card","sbx_open_add_card",{},0.32,G.C.BLUE,2.6)},
         {n=G.UIT.R,config={align="cm",padding=0.06},nodes={
             {n=G.UIT.T,config={text="Money: ",scale=0.3,colour=G.C.YELLOW}},
             bcell("-$10","sbx_money_adj",{d=-10},0.3,G.C.RED),bcell("-$1","sbx_money_adj",{d=-1},0.3,G.C.RED),
             bcell("+$1","sbx_money_adj",{d=1},0.3,G.C.GREEN),bcell("+$10","sbx_money_adj",{d=10},0.3,G.C.GREEN),bcell("+$100","sbx_money_adj",{d=100},0.3,G.C.GREEN),
         }},
-        {n=G.UIT.R,config={align="cm",padding=0.06},nodes={
-            bcell("Pass Round","sbx_pass_round",{},0.32,G.C.ORANGE),
-            bcell("Reroll Boss","sbx_reroll_boss",{},0.32,G.C.ORANGE),
-        }},
-        trow("Right-click jokers, consumables, or hand cards to edit.",0.26,G.C.UI.TEXT_LIGHT),
+        row{bcell("Pass Round","sbx_pass_round",{},0.32,G.C.ORANGE),bcell("Reroll Boss","sbx_reroll_boss",{},0.32,G.C.ORANGE)},
+        trow("Right-click any joker, consumable or card in hand to edit it.",0.26),
     }})
 end
 local function open_sandbox_menu() open_overlay(sandbox_menu_def()) end
-
--- handlers for card editor
-G.FUNCS.sbx_set_edition=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; apply_edition(r.card,r.key); close_overlay(); open_card_editor(r.card) end
-G.FUNCS.sbx_set_enhancement=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; apply_enhancement(r.card,r.key); close_overlay(); open_card_editor(r.card) end
-G.FUNCS.sbx_set_seal=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; apply_seal(r.card,r.key); close_overlay(); open_card_editor(r.card) end
-G.FUNCS.sbx_chip_adj=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; r.card.sbx_bonus_chips=math.max(0,(r.card.sbx_bonus_chips or 0)+r.d); close_overlay(); open_card_editor(r.card) end
-G.FUNCS.sbx_remove_card=function(e)
-    local r=e.config.ref_table; if not(r and r.card) then return end
-    local card=r.card; close_overlay()
-    for _,area in ipairs({G.hand,G.deck,G.jokers,G.consumeables}) do
-        if area then for _,c in ipairs(area.cards) do if c==card then area:remove_card(card); card:remove(); return end end end
-    end
-end
-
-G.FUNCS.sbx_duplicate_card=function(e)
-    local r=e.config.ref_table; if not(r and r.card) then return end
-    local src=r.card
-    -- Find which area it lives in
-    local src_area
-    for _,area in ipairs({G.hand,G.deck,G.jokers,G.consumeables}) do
-        if area then for _,c in ipairs(area.cards) do if c==src then src_area=area; break end end end
-        if src_area then break end
-    end
-    if not src_area then return end
-    -- Spawn a copy with the same center
-    local center = src.config and src.config.center or G.P_CENTERS.c_base
-    local nc=Card(src_area.T.x+src_area.T.w/2,src_area.T.y,G.CARD_W,G.CARD_H,src.base and G.P_CARDS[src.base.id] or nil,center)
-    -- Copy edition, seal, bonus chips
-    if src.edition then nc:set_edition(src.edition.key,true,true) end
-    if src.seal then nc:set_seal(src.seal,true,true) end
-    nc.sbx_bonus_chips = src.sbx_bonus_chips
-    nc.sbx_xmult = src.sbx_xmult
-    nc:add_to_deck()
-    src_area:emplace(nc)
-    close_overlay()
-end
-
--- handlers for joker editor
-G.FUNCS.sbx_joker_set_edition=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; apply_edition(r.card,r.key); close_overlay(); open_joker_editor(r.card) end
-G.FUNCS.sbx_joker_chip_adj=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; r.card.sbx_bonus_chips=math.max(0,(r.card.sbx_bonus_chips or 0)+r.d); close_overlay(); open_joker_editor(r.card) end
-G.FUNCS.sbx_joker_xmult_adj=function(e) local r=e.config.ref_table; if not(r and r.card) then return end; r.card.sbx_xmult=math.max(0,(r.card.sbx_xmult or 0)+r.d); close_overlay(); open_joker_editor(r.card) end
-
--- handlers for add playing card
-G.FUNCS.sbx_open_add_card=function() close_overlay(); open_add_card() end
-G.FUNCS.sbx_open_add_center=function() close_overlay(); open_add_center() end
-G.FUNCS.sbx_pick_rank=function(e) local r=e.config.ref_table; if r then SBX_ADD_CARD.rank=r.val end; close_overlay(); open_overlay(add_card_def()) end
-G.FUNCS.sbx_pick_suit=function(e) local r=e.config.ref_table; if r then SBX_ADD_CARD.suit=r.val end; close_overlay(); open_overlay(add_card_def()) end
-G.FUNCS.sbx_area_hand=function() SBX_ADD_CARD.area="hand"; close_overlay(); open_overlay(add_card_def()) end
-G.FUNCS.sbx_area_deck=function() SBX_ADD_CARD.area="deck"; close_overlay(); open_overlay(add_card_def()) end
-G.FUNCS.sbx_confirm_add_card=function() spawn_playing_card(SBX_ADD_CARD.rank,SBX_ADD_CARD.suit,(SBX_ADD_CARD.area=="hand") and G.hand or G.deck); close_overlay() end
-
--- handlers for add center
-G.FUNCS.sbx_close_center=function()
-    SBX_SEARCH.text=""; SBX_IN_CENTER_PICKER=false; close_overlay()
-end
-G.FUNCS.sbx_search_clear=function()
-    SBX_SEARCH.text=""; SBX_CENTER_PAGE=1; close_overlay(); open_overlay(add_center_def())
-end
-G.FUNCS.sbx_center_type=function(e) local r=e.config.ref_table; if r then SBX_ADD_CTYPE=r.val; SBX_ADD_CKEY=nil; SBX_CENTER_PAGE=1 end; close_overlay(); open_overlay(add_center_def()) end
-G.FUNCS.sbx_center_pick=function(e) local r=e.config.ref_table; if r and r.key then SBX_ADD_CKEY=r.key end; close_overlay(); open_overlay(add_center_def()) end
-G.FUNCS.sbx_center_prev=function() SBX_CENTER_PAGE=math.max(1,SBX_CENTER_PAGE-1); close_overlay(); open_overlay(add_center_def()) end
-G.FUNCS.sbx_center_next=function() SBX_CENTER_PAGE=SBX_CENTER_PAGE+1; close_overlay(); open_overlay(add_center_def()) end
-G.FUNCS.sbx_confirm_add_center=function()
-    if not SBX_ADD_CKEY then return end
-    local area=(SBX_ADD_CTYPE=="Joker") and G.jokers or G.consumeables
-    spawn_center(SBX_ADD_CKEY,area); close_overlay()
-end
-
-
--- handlers for sandbox menu
-G.FUNCS.sbx_money_adj=function(e) local r=e.config.ref_table; if not r then return end; ease_dollars(r.d); close_overlay(); open_sandbox_menu() end
+G.FUNCS.sbx_money_adj=function(e) ease_dollars(e.config.ref_table.d); open_sandbox_menu() end
 G.FUNCS.sbx_pass_round=function()
     close_overlay()
     G.E_MANAGER:add_event(Event({func=function()
         if G.STATE == G.STATES.SELECTING_HAND and G.GAME.blind then
             G.GAME.chips = G.GAME.blind.chips + 1
-
-            if G.hand_text_area and G.hand_text_area.game_chips then
-                G.hand_text_area.game_chips:update_text()
-            end
+            if G.hand_text_area and G.hand_text_area.game_chips then G.hand_text_area.game_chips:update_text() end
         end
         return true
     end}))
 end
-
 G.FUNCS.sbx_reroll_boss=function()
     close_overlay()
     G.E_MANAGER:add_event(Event({func=function()
         if not (G.GAME and G.GAME.blind_on_deck=="Boss") then return true end
-
         G.GAME.bosses_used = {}
-
         if G.GAME.round_resets and G.GAME.round_resets.blind_states then
             G.GAME.round_resets.blind_states.Boss = {triggered=false}
         end
-
         if G.HUD_blind then G.HUD_blind:remove(); G.HUD_blind=nil end
         if G.UIDEF and G.UIDEF.blind_select_opts then
             G.E_MANAGER:add_event(Event({func=function()
-                if G.blind_select_opts then
-                    G.blind_select_opts:remove()
-                    G.blind_select_opts=nil
-                end
+                if G.blind_select_opts then G.blind_select_opts:remove(); G.blind_select_opts=nil end
                 return true
             end}))
         end
@@ -398,65 +392,23 @@ G.FUNCS.sbx_reroll_boss=function()
     end}))
 end
 
-local _sbx_funcs_mt = getmetatable(G.FUNCS)
-if not _sbx_funcs_mt then
-    setmetatable(G.FUNCS, {
-        __index = function(t, k)
-            if type(k) ~= "string" then
-                return function() end
-            end
-            return nil
-        end
-    })
-end
-
--- Right click
+-- Right click a card = edit it
 local orig_R_press=Controller.queue_R_cursor_press
 function Controller:queue_R_cursor_press(x,y)
     if G.SETTINGS.paused then orig_R_press(self,x,y); return end
     local target = self.hovering and self.hovering.target
-    if target then
-        if G.jokers and target.area==G.jokers then
-            open_joker_editor(target); return
-        end
-        if G.consumeables and target.area==G.consumeables then
-            open_joker_editor(target); return
-        end
-        if G.hand and target.area==G.hand and G.STATE==G.STATES.SELECTING_HAND then
-            open_card_editor(target); return
-        end
+    if target and target.area and ((G.jokers and target.area==G.jokers) or (G.consumeables and target.area==G.consumeables)
+        or (G.hand and target.area==G.hand)) then
+        open_editor(target); return
     end
     orig_R_press(self,x,y)
 end
 
--- Scoring hooks
-local orig_get_chip_bonus=Card.get_chip_bonus
-Card.get_chip_bonus=function(self,...) local base=orig_get_chip_bonus and orig_get_chip_bonus(self,...) or 0; return (base or 0)+(self.sbx_bonus_chips or 0) end
-
-local orig_calculate_card=Card.calculate_card
-Card.calculate_card=function(self,context,...)
-    local ret=orig_calculate_card and orig_calculate_card(self,context,...)
-    if context and context.scoring_hand and (self.sbx_bonus_chips or 0)>0 then ret=ret or {}; ret.chips=(ret.chips or 0)+self.sbx_bonus_chips end
-    return ret
-end
-
-local orig_calculate_joker=Card.calculate_joker
-Card.calculate_joker=function(self,context,...)
-    local ret=orig_calculate_joker and orig_calculate_joker(self,context,...) or {}
-    if context and context.joker_main then
-        if (self.sbx_bonus_chips or 0)>0 then ret=ret or {}; ret.chips=(ret.chips or 0)+self.sbx_bonus_chips end
-        if (self.sbx_xmult or 0)>0 then ret=ret or {}; ret.x_mult=(ret.x_mult or 1)*(1+self.sbx_xmult) end
-    end
-    return ret
-end
-
--- CONFIG
--- Defaults
+-- ===================== config & hotkeys =====================
 if not SMODS.current_mod.config then SMODS.current_mod.config = {} end
 local cfg = SMODS.current_mod.config
 if cfg.keybinds_enabled == nil then cfg.keybinds_enabled = true end
 
--- Keybind actions
 local function hovered_card()
     local target = G.CONTROLLER and G.CONTROLLER.hovering and G.CONTROLLER.hovering.target
     if not target then return nil, nil end
@@ -465,197 +417,86 @@ local function hovered_card()
     if G.hand and target.area == G.hand then return target, "hand" end
     return nil, nil
 end
-
-local function duplicate_hovered()
-    local card = hovered_card()
-    if not card then return end
-    local src_area
-    for _,area in ipairs({G.hand,G.deck,G.jokers,G.consumeables}) do
-        if area then for _,c in ipairs(area.cards) do if c==card then src_area=area; break end end end
-        if src_area then break end
-    end
-    if not src_area then return end
-    local center = card.config and card.config.center or G.P_CENTERS.c_base
-    local nc = Card(src_area.T.x+src_area.T.w/2, src_area.T.y, G.CARD_W, G.CARD_H,
-        card.base and G.P_CARDS[card.base.id] or nil, center)
-    if card.edition then nc:set_edition(card.edition.key,true,true) end
-    if card.seal then nc:set_seal(card.seal,true,true) end
-    nc.sbx_bonus_chips = card.sbx_bonus_chips
-    nc.sbx_xmult = card.sbx_xmult
-    nc:add_to_deck(); src_area:emplace(nc)
+local function cycle(list,cur,dir)
+    local idx=1
+    for i,o in ipairs(list) do if o.key==cur then idx=i; break end end
+    return list[((idx-1+dir)%#list)+1].key
 end
-
-local function remove_hovered()
-    local card = hovered_card()
-    if not card then return end
-    for _,area in ipairs({G.hand,G.deck,G.jokers,G.consumeables}) do
-        if area then for _,c in ipairs(area.cards) do
-            if c==card then area:remove_card(card); card:remove(); return end
-        end end
-    end
-end
-
 local function cycle_edition_hovered(dir)
-    local card = hovered_card()
-    if not card then return end
-    local cur = (card.edition and card.edition.key) or "none"
-    local idx = 1
-    for i,ed in ipairs(EDITIONS) do if ed.key==cur then idx=i; break end end
-    idx = ((idx - 1 + dir) % #EDITIONS) + 1
-    apply_edition(card, EDITIONS[idx].key)
+    local card=hovered_card(); if not card then return end
+    apply_edition(card,cycle(EDITIONS,(card.edition and card.edition.key) or "none",dir))
 end
-
 local function cycle_seal_hovered(dir)
-    local card, kind = hovered_card()
-    if not card or kind ~= "hand" then return end
-    local cur = card.seal or "none"
-    local idx = 1
-    for i,sl in ipairs(SEALS) do if sl.key==cur then idx=i; break end end
-    idx = ((idx - 1 + dir) % #SEALS) + 1
-    apply_seal(card, SEALS[idx].key)
+    local card,kind=hovered_card(); if not card or kind~="hand" then return end
+    apply_seal(card,cycle(SEALS,card.seal or "none",dir))
 end
-
 local function cycle_enhancement_hovered(dir)
-    local card, kind = hovered_card()
-    if not card or kind ~= "hand" then return end
-    local cur = "none"
-    if card.config and card.config.center then
-        local ck = card.config.center.key or "c_base"
-        if ck ~= "c_base" then cur = ck end
-    end
-    local idx = 1
-    for i,en in ipairs(ENHANCEMENTS) do if en.key==cur then idx=i; break end end
-    idx = ((idx - 1 + dir) % #ENHANCEMENTS) + 1
-    apply_enhancement(card, ENHANCEMENTS[idx].key)
+    local card,kind=hovered_card(); if not card or kind~="hand" then return end
+    local ck=card.config.center.key
+    apply_enhancement(card,cycle(ENHANCEMENTS,ck~="c_base" and ck or "none",dir))
+end
+local function toggle_edition_hovered(key)
+    local card=hovered_card(); if not card then return end
+    apply_edition(card,(card.edition and card.edition.key)==key and "none" or key)
 end
 
--- Menu toggles
+local MENU_STATES={"SELECTING_HAND","BLIND_SELECT","SHOP","TAROT_PACK","PLANET_PACK","SPECTRAL_PACK","BUFFOON_PACK","STANDARD_PACK","SMODS_BOOSTER_OPENED"}
+local function menu_ok() for _,s in ipairs(MENU_STATES) do if G.STATES[s] and G.STATE==G.STATES[s] then return true end end end
 local function toggle_add_card()
-    if G.OVERLAY_MENU then close_overlay()
-    elseif G.STATE==G.STATES.SELECTING_HAND then open_add_card() end
+    if G.OVERLAY_MENU then close_overlay() elseif G.STATE==G.STATES.SELECTING_HAND then open_add_card() end
 end
-
 local function toggle_sandbox_menu()
-    if G.OVERLAY_MENU then close_overlay()
-    elseif G.STATE==G.STATES.SELECTING_HAND
-        or G.STATE==G.STATES.BLIND_SELECT
-        or G.STATE==G.STATES.SHOP
-        or G.STATE==G.STATES.TAROT_PACK
-        or G.STATE==G.STATES.PLANET_PACK
-        or G.STATE==G.STATES.SPECTRAL_PACK
-        or G.STATE==G.STATES.BUFFOON_PACK
-        or G.STATE==G.STATES.STANDARD_PACK
-        then open_sandbox_menu() end
+    if G.OVERLAY_MENU then close_overlay() elseif menu_ok() then open_sandbox_menu() end
 end
 
--- Keybinds
 local orig_keypressed=love.keypressed
 love.keypressed=function(key,scancode,isrepeat)
-    -- Legacy F keys, kept for full-size keyboards
     if key=="f2" then toggle_add_card(); return end
     if key=="f3" then toggle_sandbox_menu(); return end
-    -- Center picker search input
-    if SBX_IN_CENTER_PICKER and G.OVERLAY_MENU then
+    -- spawner search box: typing filters the grid
+    if SBX_IN_PICKER and G.OVERLAY_MENU then
+        if key=="escape" then close_overlay(); return end
         if key=="backspace" then
-            if SBX_SEARCH.text~="" then
-                SBX_SEARCH.text=SBX_SEARCH.text:sub(1,-2)
-                SBX_CENTER_PAGE=1; close_overlay(); open_overlay(add_center_def())
-            end; return
+            if SBX_SEARCH.text~="" then SBX_SEARCH.text=SBX_SEARCH.text:sub(1,-2); SPAWN.page=1; open_spawner() end
+            return
         end
-        if key=="escape" then SBX_IN_CENTER_PICKER=false; close_overlay(); return end
-        local shift = love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")
-        local char = (#key==1) and (shift and key:upper() or key) or (key=="space" and " " or nil)
-        if char and #SBX_SEARCH.text < 20 then
-            SBX_SEARCH.text=SBX_SEARCH.text..char; SBX_CENTER_PAGE=1
-            close_overlay(); open_overlay(add_center_def())
-        end
+        local char=(#key==1 and key:match("[%w%-' ]")) and key or (key=="space" and " " or nil)
+        if char and #SBX_SEARCH.text<20 then SBX_SEARCH.text=SBX_SEARCH.text..char; SPAWN.page=1; open_spawner() end
         return
     end
-    -- Menu keys that work on keyboards without an F row (Chromebooks).
-    -- Checked after the search box so they can still be typed into it.
+    -- menu keys that work on keyboards without an F row (Chromebooks)
     if key=="[" then toggle_add_card(); return end
     if key=="]" then toggle_sandbox_menu(); return end
-    -- Hotkeys
-    if cfg.keybinds_enabled and not G.OVERLAY_MENU then
-        local in_run = G.STATE and (
-            G.STATE==G.STATES.SELECTING_HAND or
-            G.STATE==G.STATES.HAND_PLAYED or
-            G.STATE==G.STATES.DRAW_TO_HAND or
-            G.STATE==G.STATES.SHOP or
-            G.STATE==G.STATES.BLIND_SELECT or
-            G.STATE==G.STATES.TAROT_PACK or
-            G.STATE==G.STATES.PLANET_PACK or
-            G.STATE==G.STATES.SPECTRAL_PACK or
-            G.STATE==G.STATES.BUFFOON_PACK or
-            G.STATE==G.STATES.STANDARD_PACK
-        )
-        if in_run then
-        -- D = duplicate
-        if key=="d" then duplicate_hovered(); return end
-        -- X / Delete / Backspace = remove (Chromebooks have no Delete key)
-        if key=="x" or key=="delete" or key=="backspace" then remove_hovered(); return end
-        -- E / Q = cycle ed
+    if cfg.keybinds_enabled and not G.OVERLAY_MENU and G.STATE and (menu_ok() or G.STATE==G.STATES.HAND_PLAYED or G.STATE==G.STATES.DRAW_TO_HAND) then
+        if key=="d" then local c=hovered_card(); if c then duplicate(c) end; return end
+        if key=="x" or key=="delete" or key=="backspace" then local c=hovered_card(); if c then remove(c) end; return end
         if key=="e" then cycle_edition_hovered(1); return end
         if key=="q" then cycle_edition_hovered(-1); return end
-        -- S / A = cycle seal
         if key=="s" then cycle_seal_hovered(1); return end
         if key=="a" then cycle_seal_hovered(-1); return end
-        -- W / Tab = cycle enhancement
         if key=="w" then cycle_enhancement_hovered(1); return end
         if key=="tab" then cycle_enhancement_hovered(-1); return end
-        -- F = toggle foil
-        if key=="f" then
-            local card = hovered_card()
-            if card then
-                local cur = card.edition and card.edition.key
-                apply_edition(card, cur=="e_foil" and "none" or "e_foil")
-            end; return
-        end
-        -- H = toggle holo
-        if key=="h" then
-            local card = hovered_card()
-            if card then
-                local cur = card.edition and card.edition.key
-                apply_edition(card, cur=="e_holo" and "none" or "e_holo")
-            end; return
-        end
-        -- P = toggle poly
-        if key=="p" then
-            local card = hovered_card()
-            if card then
-                local cur = card.edition and card.edition.key
-                apply_edition(card, cur=="e_polychrome" and "none" or "e_polychrome")
-            end; return
-        end
-        -- N = toggle neg
-        if key=="n" then
-            local card = hovered_card()
-            if card then
-                local cur = card.edition and card.edition.key
-                apply_edition(card, cur=="e_negative" and "none" or "e_negative")
-            end; return
-        end
-        end -- if in_run
-    end -- if keybinds_enabled
+        if key=="f" then toggle_edition_hovered("e_foil"); return end
+        if key=="h" then toggle_edition_hovered("e_holo"); return end
+        if key=="p" then toggle_edition_hovered("e_polychrome"); return end
+        if key=="n" then toggle_edition_hovered("e_negative"); return end
+    end
     if orig_keypressed then return orig_keypressed(key,scancode,isrepeat) end
 end
 
--- config tab
 SMODS.current_mod.config_tab=function()
     return {n=G.UIT.ROOT,config={align="cm",colour=G.C.BLACK,r=0.1,padding=0.2,minw=5,minh=1},nodes={
-        trow("Sandbox Mod",0.4,G.C.WHITE),
+        trow("But What If X?",0.4,G.C.WHITE),
         {n=G.UIT.R,config={align="cm",padding=0.1},nodes={
-            create_toggle({
-                label="Enable Hotkeys",
-                ref_table=cfg, ref_value="keybinds_enabled",
-                active_colour=G.C.GREEN,
-            })
+            create_toggle({label="Enable Hotkeys",ref_table=cfg,ref_value="keybinds_enabled",active_colour=G.C.GREEN})
         }},
-        trow("Hotkeys (hover a card, then press):",0.28,G.C.YELLOW),
-        trow("D=Duplicate  X/Backspace=Remove",0.26,G.C.UI.TEXT_LIGHT),
-        trow("E/Q=Cycle Edition  F=Foil  H=Holo  P=Poly  N=Neg",0.26,G.C.UI.TEXT_LIGHT),
-        trow("S/A=Cycle Seal  W/Tab=Cycle Enhancement",0.26,G.C.UI.TEXT_LIGHT),
-        trow("[ =Add Card  ] =Sandbox Menu  Right-click=Edit",0.26,G.C.UI.TEXT_LIGHT),
+        trow("Menus:",0.28,G.C.YELLOW),
+        trow("] = Sandbox menu (Spawner, money, pass round, reroll boss)   [ = Add playing card",0.26),
+        trow("Right-click a joker, consumable or card in hand = full card editor",0.26),
         trow("(F2/F3 also work on keyboards with an F row)",0.24,G.C.UI.TEXT_INACTIVE),
+        trow("Hotkeys (hover a card, then press):",0.28,G.C.YELLOW),
+        trow("D=Duplicate  X/Backspace=Remove",0.26),
+        trow("E/Q=Cycle Edition  F=Foil  H=Holo  P=Poly  N=Neg",0.26),
+        trow("S/A=Cycle Seal  W/Tab=Cycle Enhancement",0.26),
     }}
 end
